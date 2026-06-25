@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>RMRF Map Designer</title>
+<style>
+  html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #0a1812;
+    font-family: 'Courier New', Courier, monospace; color: #9fd9b6; -webkit-user-select: none; user-select: none; }
+  canvas { display: block; }
+
+  /* widgets (collapsible corners, mirrors asset-designer) */
+  .widget { position: fixed; z-index: 10; }
+  .wbtn { background: rgba(5,16,11,0.92); border: 1px solid #1d4030; color: #5dff9f;
+    font-family: inherit; font-size: 11px; font-weight: bold; letter-spacing: 0.14em;
+    padding: 7px 11px; cursor: pointer; outline: none; }
+  .wbtn:hover { border-color: #5dff9f; }
+  .wpanel { display: none; margin-top: 5px; background: rgba(5,16,11,0.95); border: 1px solid #133022; padding: 11px; }
+  .widget.open .wbtn { border-color: #5dff9f; color: #5dff9f; background: rgba(93,255,159,0.08); }
+  .widget.open .wpanel { display: block; }
+
+  #w-gen { top: 10px; left: 10px; }
+  #gen-panel { width: 240px; max-height: 78vh; overflow-y: auto; }
+  #w-export { top: 10px; right: 10px; }
+  #export-panel { width: 260px; }
+
+  /* parameter rows */
+  .prow { display: flex; align-items: center; margin: 7px 0; font-size: 11px; }
+  .prow label { color: #5a8a6f; width: 92px; flex-shrink: 0; letter-spacing: 0.06em; }
+  .prow input[type=range] { flex: 1; min-width: 0; accent-color: #5dff9f; }
+  .prow .val { color: #cdeede; width: 40px; text-align: right; flex-shrink: 0; }
+  .prow input[type=number] { width: 78px; background: #0a1812; border: 1px solid #1d4030; color: #cdeede;
+    font-family: inherit; font-size: 11px; padding: 3px 5px; outline: none; }
+  .prow input[type=checkbox] { accent-color: #5dff9f; }
+  .seclbl { color: #5dff9f; font-size: 10px; font-weight: bold; letter-spacing: 0.18em;
+    margin: 12px 0 4px; border-bottom: 1px solid #163225; padding-bottom: 3px; }
+  .seclbl:first-child { margin-top: 0; }
+
+  .gbtn { display: block; width: 100%; text-align: center; background: rgba(5,16,11,0.92);
+    border: 1px solid #2b6f4a; color: #5dff9f; font-family: inherit; font-size: 11px; font-weight: bold;
+    letter-spacing: 0.12em; padding: 8px; margin-top: 8px; cursor: pointer; outline: none; }
+  .gbtn:hover { border-color: #5dff9f; background: rgba(93,255,159,0.08); }
+
+  #export-panel textarea { width: 100%; height: 150px; background: #0a1812; border: 1px solid #1d4030;
+    color: #9fd9b6; font-family: inherit; font-size: 10px; padding: 6px; outline: none; resize: vertical;
+    margin: 6px 0; box-sizing: border-box; }
+  #export-panel .ehint { font-size: 9px; color: #5a8a6f; letter-spacing: 0.04em; }
+
+  /* asset palette (bottom-left) */
+  #w-palette { bottom: 10px; left: 10px; }
+  #palette-panel { width: 250px; max-height: 60vh; overflow-y: auto; }
+  #team-row { display: flex; gap: 5px; margin-bottom: 9px; }
+  .team-btn { flex: 1; background: rgba(5,16,11,0.92); border: 1px solid #1d4030; color: #7fc79c;
+    font-family: inherit; font-size: 10px; font-weight: bold; letter-spacing: 0.06em; padding: 5px 0; cursor: pointer; outline: none; }
+  .team-btn:hover { border-color: #5dff9f; }
+  .team-btn.active { color: #0a1812; }
+  /* Active tints are EDITOR-ONLY placeholders to tell the two bases apart — NOT
+     the team's colour. Players pick their colour in-game, so these are kept off
+     the red/blue game palette on purpose (no colour confusion). */
+  .team-btn[data-team=neutral].active { background: #9a9a9a; border-color: #cfcfcf; }
+  .team-btn[data-team=a].active { background: #b88a2e; border-color: #e8c87a; }
+  .team-btn[data-team=b].active { background: #2e8a96; border-color: #7ad8e0; }
+  #pal-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+  .pal-tile { position: relative; aspect-ratio: 1; background: #0a1812; border: 1px solid #163225;
+    cursor: pointer; overflow: hidden; display: flex; align-items: flex-end; justify-content: center; }
+  .pal-tile:hover { border-color: #5dff9f; }
+  .pal-tile.active { border-color: #5dff9f; box-shadow: 0 0 6px rgba(93,255,159,0.5); }
+  .pal-tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .pal-tile span { position: relative; font-size: 8px; color: #9fd9b6; background: rgba(5,16,11,0.8);
+    padding: 1px 3px; letter-spacing: 0.04em; text-align: center; width: 100%; }
+  .pcat { color: #5dff9f; font-size: 9px; font-weight: bold; letter-spacing: 0.16em; margin: 9px 0 4px; }
+  .pcat:first-child { margin-top: 0; }
+  #pal-hint { font-size: 9px; color: #5a8a6f; margin-top: 9px; line-height: 1.5; }
+  #pal-hint b { color: #7fc79c; }
+
+  /* selected-placement toolbar (floats bottom-center, above HUD) */
+  #sel-bar { position: fixed; bottom: 34px; left: 50%; transform: translateX(-50%); z-index: 11;
+    display: none; gap: 6px; background: rgba(5,16,11,0.92); border: 1px solid #2b6f4a; padding: 6px 8px; }
+  #sel-bar.show { display: flex; align-items: center; }
+  #sel-bar .slbl { color: #5dff9f; font-size: 11px; font-weight: bold; letter-spacing: 0.1em; margin-right: 4px; }
+  #sel-bar button { background: rgba(5,16,11,0.92); border: 1px solid #1d4030; color: #7fc79c;
+    font-family: inherit; font-size: 10px; font-weight: bold; letter-spacing: 0.08em; padding: 5px 9px; cursor: pointer; outline: none; }
+  #sel-bar button:hover { border-color: #5dff9f; }
+  #sel-bar button.danger:hover { border-color: #ff8a8a; color: #ff8a8a; }
+
+  /* rules form (top-center) */
+  #w-rules { top: 10px; left: 50%; transform: translateX(-50%); }
+  #rules-btn { display: block; margin: 0 auto; }
+  #rules-panel { width: 258px; max-height: 80vh; overflow-y: auto; }
+  #rules-panel select { width: 100%; background: #0a1812; border: 1px solid #1d4030; color: #cdeede;
+    font-family: inherit; font-size: 11px; padding: 3px 5px; outline: none; }
+  #rules-panel .prow input[type=text] { flex: 1; min-width: 0; background: #0a1812; border: 1px solid #1d4030;
+    color: #cdeede; font-family: inherit; font-size: 11px; padding: 3px 5px; outline: none; }
+  .diff-row { display: flex; gap: 5px; margin: 7px 0; }
+  .diff-btn { flex: 1; background: rgba(5,16,11,0.92); border: 1px solid #1d4030; color: #7fc79c;
+    font-family: inherit; font-size: 10px; font-weight: bold; letter-spacing: 0.06em; padding: 5px 0; cursor: pointer; outline: none; }
+  .diff-btn:hover { border-color: #5dff9f; }
+  .diff-btn.active { color: #5dff9f; border-color: #5dff9f; background: rgba(93,255,159,0.12); }
+  .team-hdr { color: #5dff9f; font-size: 10px; font-weight: bold; letter-spacing: 0.16em;
+    margin: 13px 0 5px; border-bottom: 1px solid #163225; padding-bottom: 3px; }
+  .roster-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; margin: 5px 0 2px; }
+  .rost-cell { display: flex; align-items: center; justify-content: space-between; font-size: 10px; color: #5a8a6f; letter-spacing: 0.04em; }
+  .rost-cell input { width: 38px; background: #0a1812; border: 1px solid #1d4030; color: #cdeede;
+    font-family: inherit; font-size: 11px; padding: 2px 4px; outline: none; text-align: center; }
+  .rost-lbl { font-size: 9px; color: #5a8a6f; letter-spacing: 0.1em; margin-top: 7px; }
+
+  #hud { position: fixed; bottom: 8px; left: 50%; transform: translateX(-50%); z-index: 10;
+    font-size: 10px; color: #5a8a6f; letter-spacing: 0.08em; background: rgba(5,16,11,0.7);
+    padding: 4px 12px; border: 1px solid #133022; white-space: nowrap; }
+  #hud b { color: #7fc79c; }
+</style>
+</head>
+<body>
+
+<div class="widget open" id="w-gen">
+  <button class="wbtn" id="gen-btn">⛰ TERRAIN</button>
+  <div class="wpanel" id="gen-panel">
+    <div class="seclbl">SEED</div>
+    <div class="prow"><label>seed</label><input type="number" id="p-seed" step="1"></div>
+    <button class="gbtn" id="randomize">🎲 RANDOM SEED</button>
+
+    <div class="seclbl">SIZE</div>
+    <div class="prow"><label>cells</label><input type="range" id="p-size" min="64" max="480" step="16"><span class="val" id="v-size"></span></div>
+    <div class="prow"><label>tile</label><input type="range" id="p-tile" min="0.5" max="2" step="0.1"><span class="val" id="v-tile"></span></div>
+
+    <div class="seclbl">SHAPE</div>
+    <div class="prow"><label>islands</label><input type="range" id="p-noiseScale" min="1" max="8" step="0.2"><span class="val" id="v-noiseScale"></span></div>
+    <div class="prow"><label>sea level</label><input type="range" id="p-seaLevel" min="0.2" max="0.6" step="0.02"><span class="val" id="v-seaLevel"></span></div>
+    <div class="prow"><label>edge sink</label><input type="range" id="p-edgeFalloff" min="0" max="1" step="0.05"><span class="val" id="v-edgeFalloff"></span></div>
+    <div class="prow"><label>height</label><input type="range" id="p-heightScale" min="2" max="12" step="0.5"><span class="val" id="v-heightScale"></span></div>
+    <div class="prow"><label>beach</label><input type="range" id="p-beachHeight" min="0.2" max="2.5" step="0.1"><span class="val" id="v-beachHeight"></span></div>
+
+    <div class="seclbl">SURFACE</div>
+    <div class="prow"><label>grass</label><input type="range" id="p-grassAmount" min="0" max="1" step="0.05"><span class="val" id="v-grassAmount"></span></div>
+    <div class="prow"><label>flat land</label><input type="checkbox" id="p-flatLand"></div>
+
+    <button class="gbtn" id="frame-cam">⊹ FRAME MAP</button>
+    <label class="prow" style="margin-top:8px;"><input type="checkbox" id="p-grid"> <span style="color:#5a8a6f;margin-left:6px;">show grid</span></label>
+  </div>
+</div>
+
+<div class="widget" id="w-rules">
+  <button class="wbtn" id="rules-btn">⚙ RULES</button>
+  <div class="wpanel" id="rules-panel"></div>
+</div>
+
+<div class="widget" id="w-export">
+  <button class="wbtn" id="export-btn">⤓ MAP CONFIG</button>
+  <div class="wpanel" id="export-panel">
+    <div class="ehint">The 3-layer map config (base / overrides / rules). Asset placement &amp; rules come next — for now this captures the terrain seed + params.</div>
+    <button class="gbtn" id="do-export">EXPORT JSON</button>
+    <textarea id="cfg-text" spellcheck="false" placeholder="exported config appears here…"></textarea>
+    <button class="gbtn" id="do-import">IMPORT / LOAD</button>
+  </div>
+</div>
+
+<div class="widget" id="w-palette">
+  <button class="wbtn" id="palette-btn">▦ ASSETS</button>
+  <div class="wpanel" id="palette-panel">
+    <div id="team-row">
+      <button class="team-btn active" data-team="neutral">NEUTRAL</button>
+      <button class="team-btn" data-team="a">TEAM A</button>
+      <button class="team-btn" data-team="b">TEAM B</button>
+    </div>
+    <div id="pal-grid"></div>
+    <div id="pal-hint">Pick an asset, then <b>click the map</b> to place. <b>R</b> rotates the ghost. Click a placed asset (no brush) to select; <b>arrow keys</b> nudge it, <b>R</b> rotates, <b>Del</b> removes. <b>Right-click</b> / <b>Esc</b> clears the brush (or close this panel on mobile).<br><br>Team tints are editor-only — players pick their colour in-game.</div>
+  </div>
+</div>
+
+<div id="sel-bar">
+  <span class="slbl" id="sel-name">—</span>
+  <button id="sel-rotate">⟳ ROTATE</button>
+  <button id="sel-delete" class="danger">✕ DELETE</button>
+</div>
+
+<div id="hud">drag / WASD = move · MMB / 2-finger = orbit + zoom · <b id="hud-info">—</b></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="js/main.js?v=8"></script>
+</body>
+</html>
