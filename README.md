@@ -18,11 +18,11 @@ A map is a config file in three layers:
    difficulty dial), plus campaign metadata (order, name).
 
 ## The contract
-- The generator and renderer live in the **game** project (`../riposte-run/`).
+- The generator and renderer live in the **game** project (`https://rmrfbase.com/`).
   This tool imports them so the editor is WYSIWYG — what you place is exactly
   what the game draws. It does not reimplement map rendering.
-- It reads the shared asset palette from `../riposte-run/js/assets.manifest.js`.
-- **Dependency is one-way:** this tool imports from `../riposte-run/`; the game
+- It reads the shared asset palette from `https://rmrfbase.com/js/assets.manifest.js`.
+- **Dependency is one-way:** this tool imports from `https://rmrfbase.com/`; the game
   NEVER imports from here.
 
 ## Status

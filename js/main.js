@@ -4,13 +4,13 @@
 // exactly what the game draws. Layers 2 (hand-placed assets) and 3 (AI/difficulty
 // rules) hang off the same shell next.
 //
-// ONE-WAY dependency: this tool imports from ../../riposte-run/; the game never
+// ONE-WAY dependency: this tool imports from https://rmrfbase.com/; the game never
 // imports from here (keeps the shipped game self-contained for Amplify).
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { IslandMap, DEFAULTS } from '../../riposte-run/js/IslandMap.js';
-import { ASSETS } from '../../riposte-run/js/assets.manifest.js';
+import { IslandMap, DEFAULTS } from 'https://rmrfbase.com/js/IslandMap.js';
+import { ASSETS } from 'https://rmrfbase.com/js/assets.manifest.js';
 
 const CELL = 5;   // world units per build cell — matches the game's BuildGrid(map, 5)
 // Teams are identity-only ('a' / 'b'), NEVER named by colour — players choose
@@ -446,7 +446,7 @@ function buildPalette() {
     const tile = document.createElement('div');
     tile.className = 'pal-tile'; tile.dataset.id = a.id; tile.title = a.desc || a.name;
     const img = document.createElement('img');
-    img.src = `../riposte-run/thumbnails/${a.id}.png`;
+    img.src = `https://rmrfbase.com/thumbnails/${a.id}.png`;
     img.onerror = () => img.remove();   // no thumbnail (e.g. perimeter kit) → label only
     const lbl = document.createElement('span'); lbl.textContent = a.name;
     tile.appendChild(img); tile.appendChild(lbl);
