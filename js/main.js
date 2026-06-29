@@ -352,6 +352,23 @@ function rebuildMapList() {
     row.appendChild(load); row.appendChild(del); list.appendChild(row);
   }
 }
+// Wipe back to a fresh blank map: default terrain, no placed assets, no roads, default
+// rules, detached from any saved map. Guarded by a confirm (skippable for headless).
+function newMap(skipConfirm) {
+  if (!skipConfirm && typeof window.confirm === 'function' &&
+      !window.confirm('Clear the map? Unsaved terrain, assets, roads and rules will be lost.')) return;
+  if (roadMode) setRoadMode(false);
+  setBrush(null); selectPlacement(null);
+  clearPlacements();
+  roads.clear(); roadAnchor = null; rebuildRoads();
+  applyRules({});                          // back to the default A=warrior / B=turtle matchup
+  initControls(); regenerate(true);        // default terrain
+  currentMapId = null;
+  try { localStorage.removeItem(LAST_KEY); } catch (e) { /* ignore */ }
+  const nm = $('map-name'); if (nm) nm.value = '';
+  rebuildMapList(); mapMsg('cleared — fresh map');
+}
+$('map-new').addEventListener('click', () => newMap());
 $('map-save').addEventListener('click', () => saveCurrentMap());
 $('map-name').addEventListener('keydown', e => { if (e.key === 'Enter') saveCurrentMap(); });
 
@@ -441,10 +458,15 @@ function buildAsset(id) {
   return g;
 }
 
-// World centre of a build cell, sitting on the terrain.
+// World centre of a build cell, sitting on the ground. On a FLAT-LAND map the inland
+// surface is one plateau (beachHeight+0.8 — same grade the game seats its bases/roads
+// at), so land assets sit on that single level instead of riding the slight per-cell
+// terrain noise (which left buildings stepped at different heights). Legacy hilly maps
+// and water cells keep the sampled terrain height.
 function cellWorld(cx, cz) {
   const x = cx * CELL, z = cz * CELL;
-  return new THREE.Vector3(x, map.heightAt(x, z), z);
+  const y = (map.params.flatLand && map.isLand(x, z)) ? (map.params.beachHeight || 1) + 0.8 : map.heightAt(x, z);
+  return new THREE.Vector3(x, y, z);
 }
 
 // Raycast the pointer against the terrain chunks → the build cell under it.
@@ -603,6 +625,7 @@ function setBrush(id) {
 
 // --- palette UI ---
 const palTiles = [];
+let roadTile = null;   // the palette's Road entry (a path tool, not an asset brush)
 function buildPalette() {
   const grid = $('pal-grid');
   let lastCat = null;
@@ -625,6 +648,21 @@ function buildPalette() {
     grid.appendChild(tile);
     palTiles.push(tile);
   }
+  // Road tool, surfaced in the palette like any other brush. Roads are a PATH (each
+  // tile's art depends on its neighbours), so picking this enters paint mode — tap to
+  // lay a connected route — rather than dropping a single object. Kept OUT of palTiles
+  // so its highlight is driven only by road mode (setRoadMode), not the brush loop.
+  const ph = document.createElement('div'); ph.className = 'pcat';
+  ph.textContent = 'PATHS'; ph.style.gridColumn = '1 / -1'; grid.appendChild(ph);
+  const rt = document.createElement('div');
+  rt.className = 'pal-tile'; rt.dataset.id = '__road'; rt.title = 'Roads — tap to lay a connected route';
+  const rimg = document.createElement('img');
+  rimg.src = 'https://rmrfbase.com/thumbnails/road.png'; rimg.onerror = () => rimg.remove();
+  const rlbl = document.createElement('span'); rlbl.textContent = 'Road';
+  rt.appendChild(rimg); rt.appendChild(rlbl);
+  rt.addEventListener('click', () => setRoadMode(!roadMode));
+  grid.appendChild(rt);
+  roadTile = rt;
 }
 buildPalette();
 
@@ -717,6 +755,18 @@ const ROAD_T = 0.5;                  // slab thickness — its side covers the d
 const roads = new Set();             // "cx,cz" cells carrying road
 let roadMode = false, roadErase = false, roadAnchor = null;
 const roadRoot = new THREE.Group(); scene.add(roadRoot);
+// Prefer the GAME's own road renderer (identical tiles + lane-marking textures + grade)
+// when it's reachable from rmrfbase.com — one source of truth instead of a look-alike.
+// Loaded async; until it arrives (or on an older deployed Roads.js that predates this
+// export) the local gray-slab fallback below renders instead. Roads sit at the flat
+// plateau grade either way.
+let roadTiles = null;
+import('https://rmrfbase.com/js/Roads.js?v=81').then(mod => {
+  if (!mod || !mod.RoadTiles) return;
+  roadTiles = new mod.RoadTiles(CELL, (x, z) => map.heightAt(x, z));
+  scene.add(roadTiles.group);
+  rebuildRoads();   // re-lay the current roads with the real game tiles
+}).catch(() => { /* Roads.js not deployed with the export yet → keep the fallback */ });
 const ROAD_MAT = new THREE.MeshStandardMaterial({ color: '#5b5e63', roughness: 0.92, flatShading: true });
 const DECK_SLAB_MAT = new THREE.MeshStandardMaterial({ color: '#5f5640', roughness: 0.95, flatShading: true });
 const DECK_TOP_MAT = new THREE.MeshStandardMaterial({ color: '#7a6e57', roughness: 0.92, flatShading: true });
@@ -759,14 +809,29 @@ function buildBridgeTile(x, z, deckY, n, s, e, w) {
 }
 function rebuildRoads() {
   clearRoadMeshes();
-  const beach = map.params.beachHeight || 1, bridgeY = beach + 1.2;
+  if (roadTiles) roadTiles.clear();
+  const p = map.params, beach = p.beachHeight || 1;
+  // Match the game (Roads.js): FLAT-LAND maps lay every road slab + bridge deck at ONE
+  // grade (the plateau height, beachHeight+0.8) so they sit flush and the ground can't
+  // poke through. The legacy hilly map has no single grade, so fall back to per-cell
+  // terrain (the old draped behaviour).
+  const grade = p.flatLand ? beach + 0.8 : null;       // game RoadTiles.tile() lifts the surface 0.06 above this
+  const bridgeY = p.flatLand ? beach + 0.8 : beach + 0.5;
+  const roadTopY = p.flatLand ? beach + 0.86 : null;   // fallback slab TOP (local renderer = grade + 0.06)
   for (const key of roads) {
     const [cx, cz] = key.split(',').map(Number);
     const x = cx * CELL, z = cz * CELL, h = map.heightAt(x, z);
     const n = roads.has(rkey(cx, cz - 1)), s = roads.has(rkey(cx, cz + 1)),
       e = roads.has(rkey(cx + 1, cz)), w = roads.has(rkey(cx - 1, cz));
-    if (isWaterCell(cx, cz)) buildBridgeTile(x, z, Math.max(h + 1.2, bridgeY), n, s, e, w);
-    else buildRoadTile(x, z, h + 0.06);
+    const water = isWaterCell(cx, cz);
+    if (roadTiles) {                       // GAME renderer: real tiles + lane markings
+      if (water) roadTiles.deck(x, z, Math.max(grade != null ? grade : h, bridgeY), n, s, e, w);
+      else roadTiles.tile(x, z, grade != null ? grade : h, n, s, e, w);
+    } else if (water) {                    // fallback (Roads.js not deployed yet)
+      buildBridgeTile(x, z, grade != null ? grade : Math.max(h + 1.2, beach + 1.2), n, s, e, w);
+    } else {
+      buildRoadTile(x, z, roadTopY != null ? roadTopY : h + 0.06);
+    }
   }
 }
 // Orthogonal L-path (horizontal then vertical) between two cells, inclusive.
@@ -788,9 +853,10 @@ function paintRoad(c) {
 }
 function setRoadMode(on) {
   roadMode = on; roadAnchor = null;
+  if (on) { setBrush(null); selectPlacement(null); }   // clear brush first (it wipes tile highlights)…
   $('w-roads').classList.toggle('open', on);
   $('roads-btn').classList.toggle('roadmode-on', on);
-  if (on) { setBrush(null); selectPlacement(null); }
+  if (roadTile) roadTile.classList.toggle('active', on);   // …then light the palette's Road tile
 }
 function setRoadErase(on) {
   roadErase = on; roadAnchor = null;
@@ -938,6 +1004,7 @@ window.MD = {
   rules: () => JSON.parse(JSON.stringify(rules)),
   applyRules,
   // Saved maps
+  newMap: () => newMap(true),
   saveMap: name => { saveCurrentMap(name); return currentMapId; },
   loadMap: loadSavedMap, deleteMap: deleteSavedMap,
   listMaps: () => savedMaps.map(m => ({ id: m.id, name: m.name })),
