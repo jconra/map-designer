@@ -212,7 +212,7 @@ $('randomize').addEventListener('click', () => { $('p-seed').value = (Math.rando
 $('frame-cam').addEventListener('click', () => frameMap());
 
 // Collapsible widgets.
-for (const id of ['gen', 'export']) {
+for (const id of ['gen', 'export', 'maps']) {
   $(id + '-btn').addEventListener('click', () => $('w-' + id).classList.toggle('open'));
 }
 
@@ -266,6 +266,69 @@ $('do-import').addEventListener('click', () => {
   try { importConfig(JSON.parse($('cfg-text').value)); }
   catch (e) { alert('Bad config JSON: ' + e.message); }
 });
+
+// --- Saved maps (a named library in localStorage, selectable from the MAPS menu) ---
+// Each saved map is a full exportConfig (terrain + placements + roads + rules). The
+// index lists {id,name}; SAVE upserts by NAME (re-saving the same name overwrites it);
+// the last-opened map id is remembered so a reload picks up where you left off.
+const MAPS_KEY = 'mapdesigner:maps';
+const MAP_KEY = id => 'mapdesigner:map:' + id;
+const LAST_KEY = 'mapdesigner:_last';
+function loadMapIndex() { try { const a = JSON.parse(localStorage.getItem(MAPS_KEY)); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+function saveMapIndex() { try { localStorage.setItem(MAPS_KEY, JSON.stringify(savedMaps)); } catch (e) { /* private/full */ } }
+let savedMaps = loadMapIndex();
+let currentMapId = null;
+const mapMsg = t => { const el = $('map-msg'); if (el) el.textContent = t; };
+
+function saveCurrentMap(nameArg) {
+  const name = ((nameArg != null ? nameArg : $('map-name').value) || '').trim() || 'Untitled';
+  rules.campaign.name = name;                 // keep the campaign name in sync with the map name
+  let entry = savedMaps.find(m => m.name.toLowerCase() === name.toLowerCase());
+  if (!entry) { entry = { id: 'map-' + Date.now().toString(36) + ((Math.random() * 1e3) | 0), name }; savedMaps.push(entry); }
+  else entry.name = name;                      // re-saving the same name overwrites that map
+  currentMapId = entry.id;
+  try {
+    localStorage.setItem(MAP_KEY(entry.id), JSON.stringify(exportConfig()));
+    localStorage.setItem(LAST_KEY, entry.id);
+  } catch (e) { mapMsg('save failed: ' + (e && e.name === 'QuotaExceededError' ? 'storage full' : (e && e.message))); return; }
+  saveMapIndex(); buildRulesUI(); rebuildMapList(); mapMsg('saved “' + name + '”');
+}
+function loadSavedMap(id) {
+  const raw = (() => { try { return localStorage.getItem(MAP_KEY(id)); } catch (e) { return null; } })();
+  if (!raw) { mapMsg('map not found'); return; }
+  try { importConfig(JSON.parse(raw)); } catch (e) { mapMsg('load failed: ' + e.message); return; }
+  currentMapId = id;
+  const entry = savedMaps.find(m => m.id === id);
+  if (entry && $('map-name')) $('map-name').value = entry.name;
+  try { localStorage.setItem(LAST_KEY, id); } catch (e) { /* ignore */ }
+  rebuildMapList(); mapMsg(entry ? 'loaded “' + entry.name + '”' : 'loaded');
+}
+function deleteSavedMap(id) {
+  const i = savedMaps.findIndex(m => m.id === id); if (i < 0) return;
+  if (typeof window.confirm === 'function' && !window.confirm('Delete map “' + savedMaps[i].name + '”? This can’t be undone.')) return;
+  try { localStorage.removeItem(MAP_KEY(id)); } catch (e) { /* ignore */ }
+  savedMaps.splice(i, 1);
+  if (currentMapId === id) { currentMapId = null; try { localStorage.removeItem(LAST_KEY); } catch (e) {} }
+  saveMapIndex(); rebuildMapList(); mapMsg('deleted');
+}
+function rebuildMapList() {
+  const list = $('maps-list'); if (!list) return;
+  list.innerHTML = '';
+  if (!savedMaps.length) {
+    const d = document.createElement('div'); d.className = 'maps-empty';
+    d.textContent = 'No saved maps yet — name it and SAVE.'; list.appendChild(d); return;
+  }
+  for (const m of savedMaps) {
+    const row = document.createElement('div'); row.className = 'map-row' + (m.id === currentMapId ? ' current' : '');
+    const load = document.createElement('span'); load.className = 'map-load'; load.textContent = m.name;
+    load.title = m.name; load.addEventListener('click', () => loadSavedMap(m.id));
+    const del = document.createElement('span'); del.className = 'map-del'; del.textContent = '✕'; del.title = 'delete';
+    del.addEventListener('click', e => { e.stopPropagation(); deleteSavedMap(m.id); });
+    row.appendChild(load); row.appendChild(del); list.appendChild(row);
+  }
+}
+$('map-save').addEventListener('click', () => saveCurrentMap());
+$('map-name').addEventListener('keydown', e => { if (e.key === 'Enter') saveCurrentMap(); });
 
 function updateHud() {
   $('hud-info').textContent = `${map.params.cols}×${map.params.rows} cells · ${Math.round(map.worldW)}u · seed ${map.params.seed}`;
@@ -775,9 +838,20 @@ window.MD = {
   // Layer 3: rules
   rules: () => JSON.parse(JSON.stringify(rules)),
   applyRules,
+  // Saved maps
+  saveMap: name => { saveCurrentMap(name); return currentMapId; },
+  loadMap: loadSavedMap, deleteMap: deleteSavedMap,
+  listMaps: () => savedMaps.map(m => ({ id: m.id, name: m.name })),
+  mapCount: () => savedMaps.length, currentMapId: () => currentMapId,
 };
 
 // --- Boot (after all placement state is initialised) -------------------------
 buildRulesUI();
 initControls();
 regenerate(true);
+// Saved-maps menu: list what's stored, and reopen the last map you had open.
+rebuildMapList();
+{
+  const lastId = (() => { try { return localStorage.getItem(LAST_KEY); } catch (e) { return null; } })();
+  if (lastId && savedMaps.find(m => m.id === lastId)) loadSavedMap(lastId);
+}
