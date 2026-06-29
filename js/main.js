@@ -330,6 +330,24 @@ function rebuildMapList() {
 $('map-save').addEventListener('click', () => saveCurrentMap());
 $('map-name').addEventListener('keydown', e => { if (e.key === 'Enter') saveCurrentMap(); });
 
+// --- Play this map in the game ----------------------------------------------
+// The game lives on a different origin (rmrfbase.com) from this tool, so the map
+// travels in the URL. Phase 1 honours TERRAIN + AI RULES only; placed assets/roads
+// are authored but not yet read by the game, so we drop overrides to keep the URL
+// short. Unicode-safe base64 (matches the game's decodeURIComponent(escape(atob…))).
+const GAME_URL = 'https://rmrfbase.com/';
+function playUrl() {
+  const cfg = exportConfig();
+  const slim = { version: cfg.version, name: cfg.name, base: cfg.base, rules: cfg.rules };
+  const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(slim))));
+  return GAME_URL + '?mapcfg=' + encodeURIComponent(b64);
+}
+function playInGame() {
+  try { window.open(playUrl(), '_blank'); mapMsg('opening game…'); }
+  catch (e) { mapMsg('play failed: ' + e.message); }
+}
+$('map-play').addEventListener('click', playInGame);
+
 function updateHud() {
   $('hud-info').textContent = `${map.params.cols}×${map.params.rows} cells · ${Math.round(map.worldW)}u · seed ${map.params.seed}`;
 }
@@ -843,6 +861,7 @@ window.MD = {
   loadMap: loadSavedMap, deleteMap: deleteSavedMap,
   listMaps: () => savedMaps.map(m => ({ id: m.id, name: m.name })),
   mapCount: () => savedMaps.length, currentMapId: () => currentMapId,
+  playUrl,
 };
 
 // --- Boot (after all placement state is initialised) -------------------------
