@@ -342,7 +342,10 @@ $('map-name').addEventListener('keydown', e => { if (e.key === 'Enter') saveCurr
 const GAME_URL = 'https://rmrfbase.com/';
 function playUrl() {
   const cfg = exportConfig();
-  const slim = { version: cfg.version, name: cfg.name, base: cfg.base, rules: cfg.rules };
+  // Send terrain + rules + PLACED ASSETS (the game builds bases from the flag HQs +
+  // elevators). Roads aren't consumed in-game yet, so they're dropped to keep the URL short.
+  const slim = { version: cfg.version, name: cfg.name, base: cfg.base, rules: cfg.rules,
+    overrides: { assets: (cfg.overrides && cfg.overrides.assets) || [] } };
   const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(slim))));
   return GAME_URL + '?mapcfg=' + encodeURIComponent(b64);
 }
