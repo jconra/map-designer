@@ -9,7 +9,7 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { IslandMap, DEFAULTS } from 'https://rmrfbase.com/js/IslandMap.js';
+import { IslandMap, DEFAULTS, TILE } from 'https://rmrfbase.com/js/IslandMap.js';
 import { ASSETS } from 'https://rmrfbase.com/js/assets.manifest.js';
 
 const CELL = 5;   // world units per build cell — matches the game's BuildGrid(map, 5)
@@ -121,7 +121,7 @@ function rebuildGrid() {
   const w = map.worldW;
   const divs = Math.round(w / CELL);   // one line per 5-unit build cell (the snap grid)
   gridHelper = new THREE.GridHelper(w, divs, 0x2b6f4a, 0x16402c);
-  gridHelper.position.y = (map.params.beachHeight || 1) + 0.05;
+  gridHelper.position.y = (map.params.beachHeight || 1) + 2;   // lifted so the lines float clear of the land instead of sinking into it
   gridHelper.material.transparent = true;
   gridHelper.material.opacity = 0.5;
   scene.add(gridHelper);
@@ -148,6 +148,7 @@ function regenerate(reframe = false) {
   map.generate(patch);
   rebuildGrid();
   repositionPlacements();   // terrain height changed → re-sit placed assets on it
+  rebuildRoads();           // …and re-drape the roads/bridges onto the new terrain
   if (reframe) frameMap();
   updateHud();
 }
@@ -224,6 +225,7 @@ function exportConfig() {
     base: readParams(),          // IslandMap generator params (deterministic terrain)
     overrides: {                 // hand-placed manifest assets (id + grid cell + rot + team)
       assets: placements.map(p => ({ id: p.id, cx: p.cx, cz: p.cz, rot: p.rot, team: p.team })),
+      roads: [...roads].map(k => k.split(',').map(Number)),   // [cx, cz] cells carrying road/bridge
     },
     rules: JSON.parse(JSON.stringify(rules)),   // per-team AI / difficulty / campaign — Layer 3
   };
@@ -251,6 +253,12 @@ function importConfig(cfg) {
     if (!a.id || !Number.isFinite(a.cx) || !Number.isFinite(a.cz)) continue;   // skip malformed entries
     addPlacement(a.id, a.cx, a.cz, a.rot || 0, a.team || 'neutral');
   }
+  // restore hand-placed roads
+  roads.clear(); roadAnchor = null;
+  for (const r of (cfg.overrides && cfg.overrides.roads) || []) {
+    if (Array.isArray(r) && Number.isFinite(r[0]) && Number.isFinite(r[1])) roads.add(rkey(r[0], r[1]));
+  }
+  rebuildRoads();
   applyRules(cfg.rules);
 }
 $('do-export').addEventListener('click', () => { $('cfg-text').value = JSON.stringify(exportConfig(), null, 2); });
@@ -317,7 +325,10 @@ function accentColor() { return new THREE.Color(TEAM_ACCENT[team]); }
 function buildAsset(id) {
   const a = ASSETS.find(x => x.id === id);
   if (!a) return null;
-  const g = a.make(CELL, accentColor());
+  // The gate is canonically 3 cells wide in-game (a 1-wide road threads its centre
+  // cell), but its standalone maker defaults to span 2 — which left gaps on the sides
+  // here. Pass the real span so the designer matches the game.
+  const g = id === 'gate' ? a.make(CELL, accentColor(), 3) : a.make(CELL, accentColor());
   return g;
 }
 
@@ -419,10 +430,12 @@ function placementUnderPointer(ev) {
 // Cancel the current action: drop the active brush, or if none, deselect. Shared
 // by Esc, right-click, and closing the palette on mobile.
 function clearBrushOrSelection() {
+  if (roadMode) { roadAnchor = null; return; }   // in road mode, Esc/right-click just lifts the pen
   if (brushId) setBrush(null); else selectPlacement(null);
 }
 
 function setBrush(id) {
+  if (id && roadMode) setRoadMode(false);   // picking an asset brush leaves road mode
   brushId = id;
   ghostRot = 0;
   if (id) selectPlacement(null);   // brush and selection are mutually exclusive
@@ -522,6 +535,11 @@ renderer.domElement.addEventListener('pointerup', e => {
   if (moved) return;   // a drag (pan/orbit) — not a click
   if (btn === 2) { clearBrushOrSelection(); return; }   // right-click cancels, like Esc
   if (btn !== 0) return;   // middle/other → not a placement click
+  if (roadMode) {   // road paint mode: tap lays/erases a cell
+    const c = cellUnderPointer(e);
+    if (c) paintRoad(c);
+    return;
+  }
   if (brushId) {
     const c = cellUnderPointer(e);
     if (c) addPlacement(brushId, c.cx, c.cz, ghostRot, team);
@@ -529,6 +547,101 @@ renderer.domElement.addEventListener('pointerup', e => {
     selectPlacement(placementUnderPointer(e));
   }
 });
+
+// --- Roads + bridges (hand-painted onto the build grid) ----------------------
+// A self-contained renderer (the game's RoadTiles isn't exported from rmrfbase.com):
+// flat asphalt slabs on land, raised plank decks with rails over water. Connectivity
+// (n/s/e/w) of the painted set decides which bridge sides get rails. Painting is by
+// TAP (drag pans the camera): consecutive taps auto-connect via an orthogonal path,
+// so you tap the corners of a route and it fills the straights between them.
+const ROAD_T = 0.5;                  // slab thickness — its side covers the drop on rough shore cells
+const roads = new Set();             // "cx,cz" cells carrying road
+let roadMode = false, roadErase = false, roadAnchor = null;
+const roadRoot = new THREE.Group(); scene.add(roadRoot);
+const ROAD_MAT = new THREE.MeshStandardMaterial({ color: '#5b5e63', roughness: 0.92, flatShading: true });
+const DECK_SLAB_MAT = new THREE.MeshStandardMaterial({ color: '#5f5640', roughness: 0.95, flatShading: true });
+const DECK_TOP_MAT = new THREE.MeshStandardMaterial({ color: '#7a6e57', roughness: 0.92, flatShading: true });
+const RAIL_MAT = new THREE.MeshStandardMaterial({ color: '#544c3b', roughness: 0.9, flatShading: true });
+const PILLAR_MAT = new THREE.MeshStandardMaterial({ color: '#4a3f2c', roughness: 0.9, flatShading: true });
+
+const rkey = (cx, cz) => cx + ',' + cz;
+function isWaterCell(cx, cz) { const t = map.tileAt(cx * CELL, cz * CELL); return t === TILE.SHALLOW || t === TILE.DEEP; }
+
+function clearRoadMeshes() {
+  roadRoot.traverse(o => { if (o.isMesh) o.geometry.dispose(); });
+  roadRoot.clear();
+}
+function buildRoadTile(x, z, gradeY) {
+  const slab = new THREE.Mesh(new THREE.BoxGeometry(CELL, ROAD_T, CELL), ROAD_MAT);
+  slab.position.set(x, gradeY - ROAD_T / 2, z);
+  roadRoot.add(slab);
+}
+function buildBridgeTile(x, z, deckY, n, s, e, w) {
+  const W = CELL, grp = new THREE.Group();
+  grp.add(new THREE.Mesh(new THREE.BoxGeometry(W, 0.16, W), DECK_SLAB_MAT));
+  const top = new THREE.Mesh(new THREE.BoxGeometry(W * 0.98, 0.06, W * 0.98), DECK_TOP_MAT);
+  top.position.y = 0.11; grp.add(top);
+  const railX = () => new THREE.Mesh(new THREE.BoxGeometry(W, 0.45, 0.14), RAIL_MAT);   // caps a north/south edge
+  const railZ = () => new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.45, W), RAIL_MAT);   // caps an east/west edge
+  const addRail = (m, px, pz) => { m.position.set(px, 0.3, pz); grp.add(m); };
+  if (!n) addRail(railX(), 0, -W / 2);
+  if (!s) addRail(railX(), 0, W / 2);
+  if (!e) addRail(railZ(), W / 2, 0);
+  if (!w) addRail(railZ(), -W / 2, 0);
+  grp.position.set(x, deckY, z);
+  roadRoot.add(grp);
+  // pillars from the deck down to the seabed
+  const h = map.heightAt(x, z), ph = Math.max(0.5, deckY - h);
+  for (const [ox, oz] of [[-0.34, -0.34], [0.34, -0.34], [-0.34, 0.34], [0.34, 0.34]]) {
+    const pil = new THREE.Mesh(new THREE.BoxGeometry(0.5, ph, 0.5), PILLAR_MAT);
+    pil.position.set(x + ox * W, h + ph / 2, z + oz * W);
+    roadRoot.add(pil);
+  }
+}
+function rebuildRoads() {
+  clearRoadMeshes();
+  const beach = map.params.beachHeight || 1, bridgeY = beach + 1.2;
+  for (const key of roads) {
+    const [cx, cz] = key.split(',').map(Number);
+    const x = cx * CELL, z = cz * CELL, h = map.heightAt(x, z);
+    const n = roads.has(rkey(cx, cz - 1)), s = roads.has(rkey(cx, cz + 1)),
+      e = roads.has(rkey(cx + 1, cz)), w = roads.has(rkey(cx - 1, cz));
+    if (isWaterCell(cx, cz)) buildBridgeTile(x, z, Math.max(h + 1.2, bridgeY), n, s, e, w);
+    else buildRoadTile(x, z, h + 0.06);
+  }
+}
+// Orthogonal L-path (horizontal then vertical) between two cells, inclusive.
+function lineCells(a, b) {
+  const out = [], sx = Math.sign(b.cx - a.cx);
+  for (let x = a.cx; x !== b.cx; x += sx) out.push([x, a.cz]);
+  const sz = Math.sign(b.cz - a.cz);
+  for (let z = a.cz; z !== b.cz; z += sz) out.push([b.cx, z]);
+  out.push([b.cx, b.cz]);
+  return out;
+}
+function paintRoad(c) {
+  if (roadErase) { roads.delete(rkey(c.cx, c.cz)); roadAnchor = null; rebuildRoads(); return; }
+  if (roadAnchor && (roadAnchor.cx !== c.cx || roadAnchor.cz !== c.cz)) {
+    for (const [x, z] of lineCells(roadAnchor, c)) roads.add(rkey(x, z));   // connect from the last tap
+  } else roads.add(rkey(c.cx, c.cz));
+  roadAnchor = { cx: c.cx, cz: c.cz };
+  rebuildRoads();
+}
+function setRoadMode(on) {
+  roadMode = on; roadAnchor = null;
+  $('w-roads').classList.toggle('open', on);
+  $('roads-btn').classList.toggle('roadmode-on', on);
+  if (on) { setBrush(null); selectPlacement(null); }
+}
+function setRoadErase(on) {
+  roadErase = on; roadAnchor = null;
+  $('road-draw').classList.toggle('active', !on);
+  $('road-erase').classList.toggle('active', on);
+}
+$('roads-btn').addEventListener('click', () => setRoadMode(!roadMode));
+$('road-draw').addEventListener('click', () => setRoadErase(false));
+$('road-erase').addEventListener('click', () => setRoadErase(true));
+$('road-clear').addEventListener('click', () => { roads.clear(); roadAnchor = null; rebuildRoads(); });
 
 // --- Layer 3: rules (per-team AI / difficulty / campaign) --------------------
 // A pure DATA layer — no 3D, just a form that writes `rules` into the config. The
@@ -655,6 +768,10 @@ window.MD = {
   rotateSel: rotateSel,
   nudge: nudgeSelected,
   deleteSel: () => { if (selected) removePlacement(selected); },
+  // Roads
+  setRoadMode, setRoadErase, paintRoad: (cx, cz) => paintRoad({ cx, cz }),
+  roadCount: () => roads.size, clearRoads: () => { roads.clear(); roadAnchor = null; rebuildRoads(); },
+  isWaterCell,
   // Layer 3: rules
   rules: () => JSON.parse(JSON.stringify(rules)),
   applyRules,

@@ -104,6 +104,15 @@
     font-family: inherit; font-size: 11px; padding: 2px 4px; outline: none; text-align: center; }
   .rost-lbl { font-size: 9px; color: #5a8a6f; letter-spacing: 0.1em; margin-top: 7px; }
 
+  /* roads tool (bottom-left, right of the palette) */
+  #w-roads { bottom: 10px; left: 270px; }
+  #roads-panel { width: 180px; }
+  #roads-btn.roadmode-on { border-color: #5dff9f; color: #5dff9f; background: rgba(93,255,159,0.12); }
+  #road-mode-row { display: flex; gap: 5px; margin-bottom: 9px; }
+  #road-mode-row .team-btn.active { color: #0a1812; background: #b88a2e; border-color: #e8c87a; }
+  #road-hint { font-size: 9px; color: #5a8a6f; margin-top: 9px; line-height: 1.5; }
+  #road-hint b { color: #7fc79c; }
+
   #hud { position: fixed; bottom: 8px; left: 50%; transform: translateX(-50%); z-index: 10;
     font-size: 10px; color: #5a8a6f; letter-spacing: 0.08em; background: rgba(5,16,11,0.7);
     padding: 4px 12px; border: 1px solid #133022; white-space: nowrap; }
@@ -167,6 +176,18 @@
   </div>
 </div>
 
+<div class="widget" id="w-roads">
+  <button class="wbtn" id="roads-btn">🛣 ROADS</button>
+  <div class="wpanel" id="roads-panel">
+    <div id="road-mode-row">
+      <button class="team-btn active" id="road-draw">✏ DRAW</button>
+      <button class="team-btn" id="road-erase">⌫ ERASE</button>
+    </div>
+    <button class="gbtn" id="road-clear">CLEAR ROADS</button>
+    <div id="road-hint">Tap cells to lay road; consecutive taps <b>connect automatically</b>. <b>Right-click</b>/<b>Esc</b> lifts the pen to start a new run. Roads over water become <b>bridges</b>.</div>
+  </div>
+</div>
+
 <div id="sel-bar">
   <span class="slbl" id="sel-name">—</span>
   <button id="sel-rotate">⟳ ROTATE</button>
@@ -183,6 +204,6 @@
   }
 }
 </script>
-<script type="module" src="js/main.js?v=8"></script>
+<script type="module" src="js/main.js?v=9"></script>
 </body>
 </html>
