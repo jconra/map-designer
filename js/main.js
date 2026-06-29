@@ -224,7 +224,10 @@ function exportConfig() {
     name: rules.campaign.name || 'untitled',
     base: readParams(),          // IslandMap generator params (deterministic terrain)
     overrides: {                 // hand-placed manifest assets (id + grid cell + rot + team)
-      assets: placements.map(p => ({ id: p.id, cx: p.cx, cz: p.cz, rot: p.rot, team: p.team })),
+      // flag HQs also carry `real` (the one true objective for its team; the rest decoys)
+      assets: placements.map(p => isFlagHQ(p)
+        ? { id: p.id, cx: p.cx, cz: p.cz, rot: p.rot, team: p.team, real: !!p.real }
+        : { id: p.id, cx: p.cx, cz: p.cz, rot: p.rot, team: p.team }),
       roads: [...roads].map(k => k.split(',').map(Number)),   // [cx, cz] cells carrying road/bridge
     },
     rules: JSON.parse(JSON.stringify(rules)),   // per-team AI / difficulty / campaign — Layer 3
@@ -251,8 +254,9 @@ function importConfig(cfg) {
   clearPlacements();
   for (const a of (cfg.overrides && cfg.overrides.assets) || []) {
     if (!a.id || !Number.isFinite(a.cx) || !Number.isFinite(a.cz)) continue;   // skip malformed entries
-    addPlacement(a.id, a.cx, a.cz, a.rot || 0, a.team || 'neutral');
+    addPlacement(a.id, a.cx, a.cz, a.rot || 0, a.team || 'neutral', a.real);
   }
+  for (const t of ['neutral', 'a', 'b']) ensureRealHQ(t);   // old/odd maps: guarantee one real HQ per team
   // restore hand-placed roads
   roads.clear(); roadAnchor = null;
   for (const r of (cfg.overrides && cfg.overrides.roads) || []) {
@@ -457,15 +461,52 @@ function moveGhost(ev) {
   ghost.visible = true;
 }
 
+// --- Flag-HQ "real vs decoy" -------------------------------------------------
+// A map can hold MANY flag HQs per team; exactly ONE is the real objective (holds
+// the capturable flag) and the rest are decoys, so a harder map keeps the player
+// guessing which to attack. In-game the HQs look identical (Jacob's flagless HQ
+// model) — the `real` bit is invisible data. An editor-only floating marker shows
+// the designer which one is real. If a saved map marks NONE real, the game is free
+// to pick one at random at load (mystery even to the author).
+const FLAGHQ_ID = 'flagHQ';
+const isFlagHQ = pl => pl.id === FLAGHQ_ID;
+const teamHQs = team => placements.filter(p => isFlagHQ(p) && p.team === team);
+function makeRealMarker(pl) {
+  const box = new THREE.Box3().setFromObject(pl.group);
+  const topY = Math.max(8, (box.max.y - pl.group.position.y) + 3);
+  const m = new THREE.Mesh(new THREE.OctahedronGeometry(1.2), new THREE.MeshBasicMaterial({ color: 0xffe14d }));
+  m.position.y = topY; m.userData.realMarker = true;
+  return m;
+}
+function setHQMarker(pl, real) {
+  pl.real = !!real;
+  if (real && !pl._marker) { pl._marker = makeRealMarker(pl); pl.group.add(pl._marker); }
+  else if (!real && pl._marker) { pl.group.remove(pl._marker); pl._marker.geometry.dispose(); pl._marker.material.dispose(); pl._marker = null; }
+}
+// Make `pl` the team's real HQ (clears the flag off the team's other HQs — one per team).
+function setRealHQ(pl, real) {
+  if (!isFlagHQ(pl)) return;
+  if (real) for (const o of teamHQs(pl.team)) if (o !== pl) setHQMarker(o, false);
+  setHQMarker(pl, real);
+  if (selected === pl) refreshSelBar();
+}
+// Guarantee each team that has any HQ has exactly one real one (after edits/imports).
+function ensureRealHQ(team) {
+  const hqs = teamHQs(team); if (!hqs.length) return;
+  if (!hqs.some(p => p.real)) setHQMarker(hqs[0], true);
+}
+
 // --- placement model ---
-function addPlacement(id, cx, cz, rot, tm) {
+function addPlacement(id, cx, cz, rot, tm, real) {
   const g = buildAsset(id);
   if (!g) return null;
   g.position.copy(cellWorld(cx, cz));
   g.rotation.y = rot * Math.PI / 2;
   placedRoot.add(g);
-  const pl = { id, cx, cz, rot, team: tm, group: g };
+  const pl = { id, cx, cz, rot, team: tm, group: g, real: false };
   placements.push(pl);
+  // first HQ for a team defaults to the real one; later ones are decoys (import sets it explicitly)
+  if (isFlagHQ(pl)) setHQMarker(pl, real != null ? real : !teamHQs(tm).some(p => p !== pl && p.real));
   return pl;
 }
 function removePlacement(pl) {
@@ -473,6 +514,7 @@ function removePlacement(pl) {
   placedRoot.remove(pl.group);
   placements.splice(i, 1);
   if (selected === pl) selectPlacement(null);
+  if (isFlagHQ(pl) && pl.real) ensureRealHQ(pl.team);   // lost the real HQ → promote another
 }
 function repositionPlacements() {
   for (const pl of placements) pl.group.position.copy(cellWorld(pl.cx, pl.cz));
@@ -488,7 +530,18 @@ function selectPlacement(pl) {
   selBox = new THREE.BoxHelper(pl.group, 0xffe14d);
   scene.add(selBox);
   $('sel-name').textContent = (ASSETS.find(a => a.id === pl.id)?.name || pl.id).toUpperCase();
+  refreshSelBar();
   bar.classList.add('show');
+}
+// Show the REAL-HQ toggle only for a selected flag HQ; reflect its current state.
+function refreshSelBar() {
+  const btn = $('sel-real'), pl = selected;
+  if (!btn) return;
+  if (pl && isFlagHQ(pl)) {
+    btn.style.display = '';
+    btn.classList.toggle('active', !!pl.real);
+    btn.textContent = pl.real ? '★ REAL HQ' : '☆ DECOY';
+  } else btn.style.display = 'none';
 }
 
 // Pick the placement whose group is under the pointer (for selecting/deleting).
@@ -594,6 +647,7 @@ function rotateSel() {
 }
 $('sel-rotate').addEventListener('click', rotateSel);
 $('sel-delete').addEventListener('click', () => { if (selected) removePlacement(selected); });
+$('sel-real').addEventListener('click', () => { if (selected && isFlagHQ(selected)) setRealHQ(selected, !selected.real); });
 window.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   if (e.key === 'r' || e.key === 'R') rotateSel();
@@ -844,7 +898,10 @@ window.MD = {
   setBrush, setTeam: t => { team = t; },
   place: (id, cx, cz, rot = 0, tm = team) => addPlacement(id, cx, cz, rot, tm),
   placeCount: () => placements.length,
-  placementAt: i => { const p = placements[i]; return p && { id: p.id, cx: p.cx, cz: p.cz, rot: p.rot, team: p.team, y: p.group.position.y }; },
+  placementAt: i => { const p = placements[i]; return p && { id: p.id, cx: p.cx, cz: p.cz, rot: p.rot, team: p.team, real: !!p.real, y: p.group.position.y }; },
+  setRealHQ: (i, real) => { const p = placements[i]; if (p) setRealHQ(p, real); },
+  realHQCount: team => teamHQs(team).filter(p => p.real).length,
+  removeAt: i => { const p = placements[i]; if (p) removePlacement(p); },
   selectFirst: () => { selectPlacement(placements[0] || null); return !!selected; },
   rotateSel: rotateSel,
   nudge: nudgeSelected,

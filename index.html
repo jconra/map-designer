@@ -82,6 +82,7 @@
     font-family: inherit; font-size: 10px; font-weight: bold; letter-spacing: 0.08em; padding: 5px 9px; cursor: pointer; outline: none; }
   #sel-bar button:hover { border-color: #5dff9f; }
   #sel-bar button.danger:hover { border-color: #ff8a8a; color: #ff8a8a; }
+  #sel-real.active { color: #ffe14d; border-color: #ffe14d; background: rgba(255,225,77,0.12); }
 
   /* rules form (top-center) */
   #w-rules { top: 10px; left: 50%; transform: translateX(-50%); }
@@ -220,6 +221,7 @@
 
 <div id="sel-bar">
   <span class="slbl" id="sel-name">—</span>
+  <button id="sel-real" style="display:none;">☆ DECOY</button>
   <button id="sel-rotate">⟳ ROTATE</button>
   <button id="sel-delete" class="danger">✕ DELETE</button>
 </div>
@@ -234,6 +236,6 @@
   }
 }
 </script>
-<script type="module" src="js/main.js?v=11"></script>
+<script type="module" src="js/main.js?v=12"></script>
 </body>
 </html>
