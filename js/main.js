@@ -374,16 +374,14 @@ $('map-name').addEventListener('keydown', e => { if (e.key === 'Enter') saveCurr
 
 // --- Play this map in the game ----------------------------------------------
 // The game lives on a different origin (rmrfbase.com) from this tool, so the map
-// travels in the URL. Phase 1 honours TERRAIN + AI RULES only; placed assets/roads
-// are authored but not yet read by the game, so we drop overrides to keep the URL
-// short. Unicode-safe base64 (matches the game's decodeURIComponent(escape(atob…))).
+// travels in the URL: terrain + AI rules + placed assets (bases, forts, supply) +
+// painted roads. Unicode-safe base64 (matches the game's decodeURIComponent(escape(atob…))).
 const GAME_URL = 'https://rmrfbase.com/';
 function playUrl() {
   const cfg = exportConfig();
-  // Send terrain + rules + PLACED ASSETS (the game builds bases from the flag HQs +
-  // elevators). Roads aren't consumed in-game yet, so they're dropped to keep the URL short.
   const slim = { version: cfg.version, name: cfg.name, base: cfg.base, rules: cfg.rules,
-    overrides: { assets: (cfg.overrides && cfg.overrides.assets) || [] } };
+    overrides: { assets: (cfg.overrides && cfg.overrides.assets) || [],
+                 roads: (cfg.overrides && cfg.overrides.roads) || [] } };
   const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(slim))));
   return GAME_URL + '?mapcfg=' + encodeURIComponent(b64);
 }
