@@ -4,13 +4,13 @@
 // exactly what the game draws. Layers 2 (hand-placed assets) and 3 (AI/difficulty
 // rules) hang off the same shell next.
 //
-// ONE-WAY dependency: this tool imports from https://rmrfbase.com/; the game never
+// ONE-WAY dependency: this tool imports from the game (/rmrf on this box); the game never
 // imports from here (keeps the shipped game self-contained for Amplify).
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { IslandMap, DEFAULTS, TILE } from 'https://rmrfbase.com/js/IslandMap.js';
-import { ASSETS } from 'https://rmrfbase.com/js/assets.manifest.js';
+import { IslandMap, DEFAULTS, TILE } from '/rmrf/js/IslandMap.js';
+import { ASSETS } from '/rmrf/js/assets.manifest.js?v=8';   // same-origin: palette always matches the BOX'S current game
 
 const CELL = 5;   // world units per build cell — matches the game's BuildGrid(map, 5)
 // Teams are identity-only ('a' / 'b'), NEVER named by colour — players choose
@@ -265,7 +265,33 @@ function importConfig(cfg) {
   rebuildRoads();
   applyRules(cfg.rules);
 }
-$('do-export').addEventListener('click', () => { $('cfg-text').value = JSON.stringify(exportConfig(), null, 2); });
+// Compact export: pretty JSON put every {} and [x,z] on its own line — a modest map ran
+// to a thousand lines. One ASSET per line and roads packed 14 pairs per line reads and
+// pastes far better, and it's still plain JSON.
+function compactMapJSON(cfg) {
+  const enc = (o) => JSON.stringify(o);
+  const assets = (cfg.overrides.assets || []).map(a => '   ' + enc(a)).join(',\n');
+  const roads = cfg.overrides.roads || [];
+  const roadLines = [];
+  for (let i = 0; i < roads.length; i += 14) roadLines.push('   ' + roads.slice(i, i + 14).map(enc).join(','));
+  return [
+    '{',
+    ` "version": ${enc(cfg.version)},`,
+    ` "name": ${enc(cfg.name)},`,
+    ` "base": ${enc(cfg.base)},`,
+    ' "overrides": {',
+    '  "assets": [',
+    assets,
+    '  ],',
+    '  "roads": [',
+    roadLines.join(',\n'),
+    '  ]',
+    ' },',
+    ` "rules": ${enc(cfg.rules)}`,
+    '}',
+  ].join('\n');
+}
+$('do-export').addEventListener('click', () => { $('cfg-text').value = compactMapJSON(exportConfig()); });
 $('do-import').addEventListener('click', () => {
   try { importConfig(JSON.parse($('cfg-text').value)); }
   catch (e) { alert('Bad config JSON: ' + e.message); }
@@ -373,17 +399,24 @@ $('map-save').addEventListener('click', () => saveCurrentMap());
 $('map-name').addEventListener('keydown', e => { if (e.key === 'Enter') saveCurrentMap(); });
 
 // --- Play this map in the game ----------------------------------------------
-// The game lives on a different origin (rmrfbase.com) from this tool, so the map
+// The game is served under /rmrf on this box, so the map
 // travels in the URL: terrain + AI rules + placed assets (bases, forts, supply) +
 // painted roads. Unicode-safe base64 (matches the game's decodeURIComponent(escape(atob…))).
-const GAME_URL = 'https://rmrfbase.com/';
+const GAME_URL = '/rmrf/';   // test maps against the box's current build (was rmrfbase.com — always one deploy behind)
 function playUrl() {
   const cfg = exportConfig();
   const slim = { version: cfg.version, name: cfg.name, base: cfg.base, rules: cfg.rules,
     overrides: { assets: (cfg.overrides && cfg.overrides.assets) || [],
                  roads: (cfg.overrides && cfg.overrides.roads) || [] } };
-  const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(slim))));
-  return GAME_URL + '?mapcfg=' + encodeURIComponent(b64);
+  // Same-origin handoff via localStorage: a real map (a couple hundred assets) blows past
+  // the server's URL length limit as ?mapcfg=<b64> (414). The game reads ?maplocal=<key>.
+  try {
+    localStorage.setItem('rmrf-playmap', JSON.stringify(slim));
+    return GAME_URL + '?maplocal=rmrf-playmap';
+  } catch (e) {   // storage full/blocked — fall back to the URL for small maps
+    const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(slim))));
+    return GAME_URL + '?mapcfg=' + encodeURIComponent(b64);
+  }
 }
 function playInGame() {
   try { window.open(playUrl(), '_blank'); mapMsg('opening game…'); }
@@ -446,9 +479,10 @@ function accentColor() { return new THREE.Color(TEAM_ACCENT[team]); }
 
 // Build one asset group from its maker, sized to the cell. Makers that ignore the
 // accent arg (depot/supply) just drop it.
-function buildAsset(id) {
+function buildAsset(id, tm) {
   const a = ASSETS.find(x => x.id === id);
   if (!a) return null;
+  const accentColor = () => new THREE.Color(TEAM_ACCENT[tm ?? team]);   // shadow: per-placement team, else the global brush team
   // The gate is canonically 3 cells wide in-game (a 1-wide road threads its centre
   // cell), but its standalone maker defaults to span 2 — which left gaps on the sides
   // here. Pass the real span so the designer matches the game.
@@ -579,6 +613,8 @@ function selectPlacement(pl) {
 }
 // Show the REAL-HQ toggle only for a selected flag HQ; reflect its current state.
 function refreshSelBar() {
+  const tbtn = $('sel-team');
+  if (tbtn) tbtn.textContent = selected ? `⚑ TEAM: ${(selected.team || 'neutral').toUpperCase()}` : '⚑ TEAM';
   const btn = $('sel-real'), pl = selected;
   if (!btn) return;
   if (pl && isFlagHQ(pl)) {
@@ -586,6 +622,24 @@ function refreshSelBar() {
     btn.classList.toggle('active', !!pl.real);
     btn.textContent = pl.real ? '★ REAL HQ' : '☆ DECOY';
   } else btn.style.display = 'none';
+}
+
+// Cycle a selected placement's team a → b → neutral → a, rebuilding its mesh in the
+// new accent. (Placing a whole base with the brush team set wrong used to mean
+// re-placing everything — now it's one button per building, or fix-as-you-go.)
+function swapTeam(pl) {
+  if (!pl) return;
+  pl.team = pl.team === 'a' ? 'b' : pl.team === 'b' ? 'neutral' : 'a';
+  const g = buildAsset(pl.id, pl.team);
+  if (g) {
+    g.position.copy(pl.group.position);
+    g.rotation.y = pl.group.rotation.y;
+    placedRoot.remove(pl.group);
+    pl.group = g; placedRoot.add(g);
+    if (isFlagHQ(pl)) { ensureRealHQ(pl.team); setHQMarker(pl, pl.real); }
+    selectPlacement(pl);   // re-attach the highlight box to the new mesh
+  }
+  refreshSelBar();
 }
 
 // Pick the placement whose group is under the pointer (for selecting/deleting).
@@ -638,7 +692,7 @@ function buildPalette() {
     const tile = document.createElement('div');
     tile.className = 'pal-tile'; tile.dataset.id = a.id; tile.title = a.desc || a.name;
     const img = document.createElement('img');
-    img.src = `https://rmrfbase.com/thumbnails/${a.id}.png`;
+    img.src = `/rmrf/thumbnails/${a.id}.png`;
     img.onerror = () => img.remove();   // no thumbnail (e.g. perimeter kit) → label only
     const lbl = document.createElement('span'); lbl.textContent = a.name;
     tile.appendChild(img); tile.appendChild(lbl);
@@ -655,7 +709,7 @@ function buildPalette() {
   const rt = document.createElement('div');
   rt.className = 'pal-tile'; rt.dataset.id = '__road'; rt.title = 'Roads — tap to lay a connected route';
   const rimg = document.createElement('img');
-  rimg.src = 'https://rmrfbase.com/thumbnails/road.png'; rimg.onerror = () => rimg.remove();
+  rimg.src = '/rmrf/thumbnails/road.png'; rimg.onerror = () => rimg.remove();
   const rlbl = document.createElement('span'); rlbl.textContent = 'Road';
   rt.appendChild(rimg); rt.appendChild(rlbl);
   rt.addEventListener('click', () => setRoadMode(!roadMode));
@@ -705,6 +759,7 @@ function rotateSel() {
   if (selected) { selected.rot = (selected.rot + 1) % 4; selected.group.rotation.y = selected.rot * Math.PI / 2; if (selBox) selBox.update(); }
   else if (brushId) { ghostRot = (ghostRot + 1) % 4; if (ghost) ghost.rotation.y = ghostRot * Math.PI / 2; }
 }
+$('sel-team').addEventListener('click', () => swapTeam(selected));
 $('sel-rotate').addEventListener('click', rotateSel);
 $('sel-delete').addEventListener('click', () => { if (selected) removePlacement(selected); });
 $('sel-real').addEventListener('click', () => { if (selected && isFlagHQ(selected)) setRealHQ(selected, !selected.real); });
@@ -759,7 +814,7 @@ const roadRoot = new THREE.Group(); scene.add(roadRoot);
 // export) the local gray-slab fallback below renders instead. Roads sit at the flat
 // plateau grade either way.
 let roadTiles = null;
-import('https://rmrfbase.com/js/Roads.js?v=81').then(mod => {
+import('/rmrf/js/Roads.js?v=85').then(mod => {
   if (!mod || !mod.RoadTiles) return;
   roadTiles = new mod.RoadTiles(CELL, (x, z) => map.heightAt(x, z));
   scene.add(roadTiles.group);
