@@ -314,17 +314,46 @@ let currentMapId = null;
 const mapMsg = t => { const el = $('map-msg'); if (el) el.textContent = t; };
 
 // Built-in preset map(s) — seeded into the saved list ONCE (a ready-made map to play or
-// tweak). Re-seeding is guarded by a flag so deleting it keeps it gone.
+// tweak). Re-seeding is guarded by a flag so deleting it keeps it gone. An entry with
+// `file` is FETCHED from the game (campaign maps stay one source of truth — the designer
+// copy always matches the shipped file instead of a pasted snapshot drifting out of date).
 const PRESET_MAPS = [{
-  id: 'preset-smugglers-bay', name: "Smuggler's Bay",
-  cfg: JSON.parse(`{"version":1,"name":"Smuggler's Bay","base":{"seed":271,"cols":240,"rows":240,"tile":1,"noiseScale":3.2,"seaLevel":0.42,"edgeFalloff":0.55,"heightScale":6,"beachHeight":1,"grassAmount":0.6,"flatLand":true},"overrides":{"assets":[{"id":"flagHQ","cx":-9,"cz":-9,"rot":0,"team":"a","real":true},{"id":"flagHQ","cx":-4,"cz":-9,"rot":0,"team":"a","real":false},{"id":"elevator","cx":1,"cz":-9,"rot":0,"team":"a"},{"id":"flagHQ","cx":-2,"cz":11,"rot":0,"team":"b","real":true},{"id":"flagHQ","cx":-7,"cz":10,"rot":0,"team":"b","real":false},{"id":"flagHQ","cx":-4,"cz":4,"rot":0,"team":"b","real":false},{"id":"flagHQ","cx":-7,"cz":13,"rot":0,"team":"b","real":false},{"id":"elevator","cx":-6,"cz":7,"rot":0,"team":"b"}],"roads":[[-9,-9],[-8,-9],[-7,-9],[-6,-9],[-5,-9],[-4,-9],[-3,-9],[-2,-9],[-1,-9],[0,-9],[1,-9],[-6,-8],[-6,-7],[-6,-6],[-6,-5],[-6,-4],[-6,-3],[-6,-2],[-6,-1],[-6,0],[-6,1],[-6,2],[-6,3],[-6,4],[-6,5],[-6,6],[-6,7],[-5,7],[-4,7],[-3,7],[-2,7],[-2,8],[-2,9],[-2,10],[-2,11]]},"rules":{"campaign":{"name":"Smuggler's Bay","order":1},"difficulty":"normal","teams":{"a":{"archetype":"warrior","aggression":0.6,"defensiveness":0.5,"triggerHappy":0.5,"roster":{"firebrat":6,"lurcher":3,"valkyrie":2,"jotun":2}},"b":{"archetype":"warrior","aggression":0.8,"defensiveness":0.4,"triggerHappy":0.6,"roster":{"firebrat":7,"lurcher":3,"valkyrie":2,"jotun":2}}}}}`),
+  id: 'preset-basic-training', name: 'Basic Training', file: '/rmrf/campaign/basic-training.json',
 }];
+// Retired presets (removed from the list above) — purge any copy an earlier boot seeded
+// into this browser, so retiring one here actually makes it disappear everywhere.
+const RETIRED_PRESETS = ['preset-smugglers-bay'];   // outdated (pre gate/road/rules era)
+function purgeRetiredPresets() {
+  let changed = false;
+  for (const id of RETIRED_PRESETS) {
+    const i = savedMaps.findIndex(m => m.id === id);
+    if (i < 0) continue;
+    try { localStorage.removeItem(MAP_KEY(id)); localStorage.removeItem('mapdesigner:_seeded:' + id); } catch (e) { /* ignore */ }
+    savedMaps.splice(i, 1);
+    if (currentMapId === id) { currentMapId = null; try { localStorage.removeItem(LAST_KEY); } catch (e) {} }
+    changed = true;
+  }
+  if (changed) saveMapIndex();
+}
 function seedPresets() {
   let changed = false;
   for (const pr of PRESET_MAPS) {
     const flag = 'mapdesigner:_seeded:' + pr.id;
     try {
       if (localStorage.getItem(flag) || savedMaps.some(m => m.id === pr.id)) { localStorage.setItem(flag, '1'); continue; }
+      if (pr.file) {
+        // Fetched preset (campaign map): seed asynchronously and refresh the list when it lands.
+        fetch(pr.file).then(r => r.ok ? r.json() : null).then(cfg => {
+          if (!cfg) return;
+          try {
+            localStorage.setItem(MAP_KEY(pr.id), JSON.stringify(cfg));
+            savedMaps.push({ id: pr.id, name: pr.name });
+            localStorage.setItem(flag, '1');
+            saveMapIndex(); rebuildMapList();
+          } catch (e) { /* private/full — skip */ }
+        }).catch(() => { /* offline / file missing — try again next boot */ });
+        continue;
+      }
       localStorage.setItem(MAP_KEY(pr.id), JSON.stringify(pr.cfg));
       savedMaps.push({ id: pr.id, name: pr.name });
       localStorage.setItem(flag, '1');
@@ -1202,6 +1231,7 @@ buildRulesUI();
 initControls();
 regenerate(true);
 // Saved-maps menu: seed the built-in preset(s), list what's stored, reopen the last map.
+purgeRetiredPresets();
 seedPresets();
 rebuildMapList();
 {
