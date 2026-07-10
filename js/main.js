@@ -10,7 +10,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { IslandMap, DEFAULTS, TILE } from '/rmrf/js/IslandMap.js';
-import { ASSETS } from '/rmrf/js/assets.manifest.js?v=8';   // same-origin: palette always matches the BOX'S current game
+import { ASSETS } from '/rmrf/js/assets.manifest.js?v=9';   // same-origin: palette always matches the BOX'S current game
 
 const CELL = 5;   // world units per build cell — matches the game's BuildGrid(map, 5)
 // Teams are identity-only ('a' / 'b'), NEVER named by colour — players choose
@@ -73,10 +73,12 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.maxPolarAngle = Math.PI * 0.49;   // don't drop under the horizon
-// Mouse: LEFT drag = pan the map, MIDDLE = orbit, RIGHT = pan, wheel = zoom. A
-// left CLICK (no drag) still places/selects — the pointerup handler tells a tap
-// from a drag, so dragging pans and tapping places without conflict.
-controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
+// Mouse: LEFT drag = pan the map, MIDDLE = orbit, wheel = zoom. RIGHT is the ERASER
+// (click deletes the asset/road under it, drag erases road cells), so it's not given
+// to OrbitControls at all. A left CLICK (no drag) still places/selects — the pointerup
+// handler tells a tap from a drag, so dragging pans and tapping places without conflict.
+// In ROAD mode the left button paints instead, so its pan is handed off too (WASD pans).
+controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: -1 };
 // Touch (mirrors the mouse): ONE finger drags the map, TWO fingers zoom + orbit.
 // A one-finger TAP (no drag) still places/selects via the pointerup handler.
 controls.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_ROTATE };
@@ -258,12 +260,13 @@ function importConfig(cfg) {
   }
   for (const t of ['neutral', 'a', 'b']) ensureRealHQ(t);   // old/odd maps: guarantee one real HQ per team
   // restore hand-placed roads
-  roads.clear(); roadAnchor = null;
+  roads.clear();
   for (const r of (cfg.overrides && cfg.overrides.roads) || []) {
     if (Array.isArray(r) && Number.isFinite(r[0]) && Number.isFinite(r[1])) roads.add(rkey(r[0], r[1]));
   }
   rebuildRoads();
   applyRules(cfg.rules);
+  history.length = 0;   // undo can't cross an import (terrain changed under the assets)
 }
 // Compact export: pretty JSON put every {} and [x,z] on its own line — a modest map ran
 // to a thousand lines. One ASSET per line and roads packed 14 pairs per line reads and
@@ -383,10 +386,11 @@ function rebuildMapList() {
 function newMap(skipConfirm) {
   if (!skipConfirm && typeof window.confirm === 'function' &&
       !window.confirm('Clear the map? Unsaved terrain, assets, roads and rules will be lost.')) return;
+  history.length = 0;   // fresh map, fresh undo history
   if (roadMode) setRoadMode(false);
   setBrush(null); selectPlacement(null);
   clearPlacements();
-  roads.clear(); roadAnchor = null; rebuildRoads();
+  roads.clear(); rebuildRoads();
   applyRules({});                          // back to the default A=warrior / B=turtle matchup
   initControls(); regenerate(true);        // default terrain
   currentMapId = null;
@@ -599,6 +603,31 @@ function repositionPlacements() {
   if (selBox) selBox.update();
 }
 
+// --- Undo (Ctrl/Cmd+Z) --------------------------------------------------------
+// Snapshot-based: every DESTRUCTIVE edit (place, replace, delete, road stroke, road
+// clear, import/new) pushes the whole placements+roads state first — the data is small,
+// so restoring wholesale is simpler and safer than replaying inverse ops. Self-reversing
+// edits (nudge, rotate, team cycle) don't snapshot; press the opposite key instead.
+const history = [];
+function snapshot() {
+  history.push({
+    assets: placements.map(p => ({ id: p.id, cx: p.cx, cz: p.cz, rot: p.rot, team: p.team, real: !!p.real })),
+    roads: [...roads],
+  });
+  if (history.length > 60) history.shift();
+}
+function undo() {
+  const s = history.pop();
+  if (!s) { mapMsg('nothing to undo'); return; }
+  clearPlacements();
+  for (const a of s.assets) addPlacement(a.id, a.cx, a.cz, a.rot, a.team, a.real);
+  roads.clear();
+  for (const k of s.roads) roads.add(k);
+  rebuildRoads();
+  selectPlacement(null);
+  mapMsg('undo');
+}
+
 // --- selection ---
 function selectPlacement(pl) {
   selected = pl;
@@ -643,7 +672,10 @@ function swapTeam(pl) {
 }
 
 // Pick the placement whose group is under the pointer (for selecting/deleting).
+// Freshly-placed groups have no world matrix until the next render — update first, so a
+// click (or C-copy) in the same frame as a placement still hits it.
 function placementUnderPointer(ev) {
+  placedRoot.updateWorldMatrix(true, true);
   const r = renderer.domElement.getBoundingClientRect();
   ndc.x = ((ev.clientX - r.left) / r.width) * 2 - 1;
   ndc.y = -((ev.clientY - r.top) / r.height) * 2 + 1;
@@ -659,10 +691,10 @@ function placementUnderPointer(ev) {
   return null;
 }
 
-// Cancel the current action: drop the active brush, or if none, deselect. Shared
-// by Esc, right-click, and closing the palette on mobile.
+// Cancel the current action: put the road pen away, drop the active brush, or deselect.
+// Shared by Esc, right-click-on-nothing, and closing the palette on mobile.
 function clearBrushOrSelection() {
-  if (roadMode) { roadAnchor = null; return; }   // in road mode, Esc/right-click just lifts the pen
+  if (roadMode) { setRoadMode(false); return; }   // Esc in road mode puts the pen away
   if (brushId) setBrush(null); else selectPlacement(null);
 }
 
@@ -718,13 +750,14 @@ function buildPalette() {
 }
 buildPalette();
 
-// team toggle
+// team toggle (setTeam is shared with the C-key eyedropper, which copies an asset's team too)
+function setTeam(t) {
+  team = t;
+  document.querySelectorAll('.team-btn').forEach(b => b.classList.toggle('active', b.dataset.team === t));
+  if (brushId) makeGhost();   // re-tint the ghost
+}
 for (const btn of document.querySelectorAll('.team-btn')) {
-  btn.addEventListener('click', () => {
-    team = btn.dataset.team;
-    document.querySelectorAll('.team-btn').forEach(b => b.classList.toggle('active', b === btn));
-    if (brushId) makeGhost();   // re-tint the ghost
-  });
+  btn.addEventListener('click', () => setTeam(btn.dataset.team));
 }
 $('palette-btn').addEventListener('click', () => {
   const w = $('w-palette');
@@ -761,12 +794,34 @@ function rotateSel() {
 }
 $('sel-team').addEventListener('click', () => swapTeam(selected));
 $('sel-rotate').addEventListener('click', rotateSel);
-$('sel-delete').addEventListener('click', () => { if (selected) removePlacement(selected); });
+$('sel-delete').addEventListener('click', () => { if (selected) { snapshot(); removePlacement(selected); } });
 $('sel-real').addEventListener('click', () => { if (selected && isFlagHQ(selected)) setRealHQ(selected, !selected.real); });
+// C-key eyedropper: copy whatever sits under the mouse into the brush — the asset's id,
+// team AND rotation — so the next clicks stamp exact copies of it. Over a road cell it
+// picks up the road pen instead. (lastPtr tracks the pointer for key-triggered picks.)
+let lastPtr = null;
+function eyedrop() {
+  if (!lastPtr) return false;
+  const pl = placementUnderPointer(lastPtr);
+  if (pl) {
+    setTeam(pl.team || 'neutral');
+    if (roadMode) setRoadMode(false);
+    setBrush(pl.id);
+    ghostRot = pl.rot || 0;                 // setBrush resets rotation — restore the copied one
+    if (ghost) { ghost.rotation.y = ghostRot * Math.PI / 2; moveGhost(lastPtr); }
+    mapMsg('copied ' + (ASSETS.find(a => a.id === pl.id)?.name || pl.id).toLowerCase());
+    return true;
+  }
+  const c = cellUnderPointer(lastPtr);
+  if (c && roads.has(rkey(c.cx, c.cz))) { setRoadMode(true); setRoadErase(false); mapMsg('copied road pen'); return true; }
+  return false;
+}
 window.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) { undo(); e.preventDefault(); return; }
   if (e.key === 'r' || e.key === 'R') rotateSel();
-  else if (e.key === 'Delete' || e.key === 'Backspace') { if (selected) removePlacement(selected); }
+  else if (e.key === 'c' || e.key === 'C') eyedrop();
+  else if (e.key === 'Delete' || e.key === 'Backspace') { if (selected) { snapshot(); removePlacement(selected); } }
   else if (e.key === 'Escape') clearBrushOrSelection();
   else if (e.key.startsWith('Arrow')) {
     const dir = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' }[e.key];
@@ -774,25 +829,88 @@ window.addEventListener('keydown', e => {
   }
 });
 
-// --- canvas pointer: distinguish a click (place/select) from an orbit drag ---
-let down = null;   // { x, y, button } pointer-down state
-renderer.domElement.addEventListener('pointerdown', e => { down = { x: e.clientX, y: e.clientY, button: e.button }; });
-renderer.domElement.addEventListener('pointermove', e => { if (brushId && !down) moveGhost(e); });
+// --- canvas pointer: clicks place/select, drags pan — except the ROAD PEN (left-drag
+// paints road cell by cell) and the RIGHT button (the eraser: drag scrubs road out,
+// a click deletes the asset under it / clears brush+selection). Strokes snapshot once
+// at pointer-down so one Ctrl+Z removes the whole stroke, not one cell of it.
+let down = null;     // { x, y, button } pointer-down state
+let stroke = null;   // active paint/erase stroke: { erase, last:{cx,cz}|null, dirty }
+function strokeCell(ev) {
+  const c = cellUnderPointer(ev);
+  if (!c) return;
+  // fill the gap since the last painted cell — a fast mouse skips cells between events
+  const cells = stroke.last ? lineCells(stroke.last, c) : [[c.cx, c.cz]];
+  let changed = false;
+  for (const [x, z] of cells) {
+    if (stroke.erase) changed = roads.delete(rkey(x, z)) || changed;
+    else if (!roads.has(rkey(x, z))) { roads.add(rkey(x, z)); changed = true; }
+  }
+  stroke.last = c;
+  if (changed) { stroke.dirty = true; rebuildRoads(); }
+}
+renderer.domElement.addEventListener('pointerdown', e => {
+  down = { x: e.clientX, y: e.clientY, button: e.button };
+  lastPtr = e;
+  if (e.pointerType !== 'mouse') return;               // touch drags PAN; touch taps paint on pointerup
+  if (e.button === 0 && roadMode) {                    // road pen down: paint from the first cell
+    snapshot();
+    stroke = { erase: roadErase, last: null, dirty: false };
+    strokeCell(e);
+  } else if (e.button === 2) {                         // eraser down: scrub roads while dragging
+    snapshot();
+    stroke = { erase: true, last: null, dirty: false };
+  }
+});
+renderer.domElement.addEventListener('pointermove', e => {
+  lastPtr = e;
+  if (stroke && down) { if (down.button === 2 || roadMode) strokeCell(e); return; }
+  if (brushId && !down) moveGhost(e);
+});
+renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());   // right button is the eraser
 renderer.domElement.addEventListener('pointerup', e => {
   const moved = down && (Math.abs(e.clientX - down.x) + Math.abs(e.clientY - down.y)) > 6;
   const btn = down ? down.button : 0;
-  down = null;
+  const st = stroke; down = null; stroke = null;
+  if (st && (moved || st.dirty)) {                     // a stroke happened — it's not a click
+    if (!st.dirty) history.pop();                      // dragged but changed nothing → drop the snapshot
+    return;
+  }
+  if (st && !st.dirty) history.pop();                  // unused snapshot from a tap — repush below if the tap edits
   if (moved) return;   // a drag (pan/orbit) — not a click
-  if (btn === 2) { clearBrushOrSelection(); return; }   // right-click cancels, like Esc
-  if (btn !== 0) return;   // middle/other → not a placement click
-  if (roadMode) {   // road paint mode: tap lays/erases a cell
+  if (btn === 2) {
+    // Right-CLICK: erase what's under the pointer (asset, else road cell); clear selection.
+    // On empty ground it just cancels (brush/selection), same as Esc.
+    const pl = placementUnderPointer(e);
+    if (pl) { snapshot(); removePlacement(pl); selectPlacement(null); return; }
     const c = cellUnderPointer(e);
-    if (c) paintRoad(c);
+    if (c && roads.has(rkey(c.cx, c.cz))) { snapshot(); roads.delete(rkey(c.cx, c.cz)); rebuildRoads(); return; }
+    clearBrushOrSelection();
+    return;
+  }
+  if (btn !== 0) return;   // middle/other → not a placement click
+  if (roadMode) {
+    // Mouse taps already painted at pointerdown (st). TOUCH taps paint here (touch drags pan).
+    if (!st) {
+      const c = cellUnderPointer(e);
+      if (c) {
+        snapshot();
+        if (roadErase) roads.delete(rkey(c.cx, c.cz)); else roads.add(rkey(c.cx, c.cz));
+        rebuildRoads();
+      }
+    }
     return;
   }
   if (brushId) {
-    const c = cellUnderPointer(e);
-    if (c) addPlacement(brushId, c.cx, c.cz, ghostRot, team);
+    // Place — REPLACING whatever holds the target cell (click a placed asset with a brush
+    // and the new one takes its spot; same-cell duplicates are swapped out too).
+    const hit = placementUnderPointer(e);
+    const c = hit ? { cx: hit.cx, cz: hit.cz } : cellUnderPointer(e);
+    if (!c) return;
+    snapshot();
+    if (hit) removePlacement(hit);
+    const dup = placements.find(p => p.cx === c.cx && p.cz === c.cz);
+    if (dup) removePlacement(dup);
+    addPlacement(brushId, c.cx, c.cz, ghostRot, team);
   } else {
     selectPlacement(placementUnderPointer(e));
   }
@@ -806,7 +924,7 @@ renderer.domElement.addEventListener('pointerup', e => {
 // so you tap the corners of a route and it fills the straights between them.
 const ROAD_T = 0.5;                  // slab thickness — its side covers the drop on rough shore cells
 const roads = new Set();             // "cx,cz" cells carrying road
-let roadMode = false, roadErase = false, roadAnchor = null;
+let roadMode = false, roadErase = false;
 const roadRoot = new THREE.Group(); scene.add(roadRoot);
 // Prefer the GAME's own road renderer (identical tiles + lane-marking textures + grade)
 // when it's reachable from rmrfbase.com — one source of truth instead of a look-alike.
@@ -887,7 +1005,10 @@ function rebuildRoads() {
     }
   }
 }
-// Orthogonal L-path (horizontal then vertical) between two cells, inclusive.
+// Orthogonal L-path (horizontal then vertical) between two cells, inclusive. Used only to
+// fill the tiny gaps a fast mouse leaves inside ONE paint stroke — roads no longer
+// auto-connect between separate taps (the old "pathfinding" laid road nobody asked for;
+// now the pen paints exactly the cells you drag across, like any other brush).
 function lineCells(a, b) {
   const out = [], sx = Math.sign(b.cx - a.cx);
   for (let x = a.cx; x !== b.cx; x += sx) out.push([x, a.cz]);
@@ -896,30 +1017,30 @@ function lineCells(a, b) {
   out.push([b.cx, b.cz]);
   return out;
 }
+// Paint/erase ONE cell (taps + the MD test hook; drag strokes go through strokeCell).
 function paintRoad(c) {
-  if (roadErase) { roads.delete(rkey(c.cx, c.cz)); roadAnchor = null; rebuildRoads(); return; }
-  if (roadAnchor && (roadAnchor.cx !== c.cx || roadAnchor.cz !== c.cz)) {
-    for (const [x, z] of lineCells(roadAnchor, c)) roads.add(rkey(x, z));   // connect from the last tap
-  } else roads.add(rkey(c.cx, c.cz));
-  roadAnchor = { cx: c.cx, cz: c.cz };
+  if (roadErase) roads.delete(rkey(c.cx, c.cz));
+  else roads.add(rkey(c.cx, c.cz));
   rebuildRoads();
 }
 function setRoadMode(on) {
-  roadMode = on; roadAnchor = null;
+  roadMode = on;
+  // The pen owns the left button while road mode is on (drag = paint); WASD still pans.
+  controls.mouseButtons.LEFT = on ? -1 : THREE.MOUSE.PAN;
   if (on) { setBrush(null); selectPlacement(null); }   // clear brush first (it wipes tile highlights)…
   $('w-roads').classList.toggle('open', on);
   $('roads-btn').classList.toggle('roadmode-on', on);
   if (roadTile) roadTile.classList.toggle('active', on);   // …then light the palette's Road tile
 }
 function setRoadErase(on) {
-  roadErase = on; roadAnchor = null;
+  roadErase = on;
   $('road-draw').classList.toggle('active', !on);
   $('road-erase').classList.toggle('active', on);
 }
 $('roads-btn').addEventListener('click', () => setRoadMode(!roadMode));
 $('road-draw').addEventListener('click', () => setRoadErase(false));
 $('road-erase').addEventListener('click', () => setRoadErase(true));
-$('road-clear').addEventListener('click', () => { roads.clear(); roadAnchor = null; rebuildRoads(); });
+$('road-clear').addEventListener('click', () => { snapshot(); roads.clear(); rebuildRoads(); });
 
 // --- Layer 3: rules (per-team AI / difficulty / campaign) --------------------
 // A pure DATA layer — no 3D, just a form that writes `rules` into the config. The
@@ -1049,9 +1170,20 @@ window.MD = {
   rotateSel: rotateSel,
   nudge: nudgeSelected,
   deleteSel: () => { if (selected) removePlacement(selected); },
+  // Editor QoL (eyedropper / undo / eraser — headless-testable via screen coords)
+  screenOf: (cx, cz) => {   // build cell -> {clientX, clientY} for synthetic pointer tests
+    camera.updateMatrixWorld();
+    const v = cellWorld(cx, cz).project(camera);
+    const r = renderer.domElement.getBoundingClientRect();
+    return { clientX: r.left + (v.x * 0.5 + 0.5) * r.width, clientY: r.top + (-v.y * 0.5 + 0.5) * r.height };
+  },
+  eyedropAt: (clientX, clientY) => { lastPtr = { clientX, clientY }; return eyedrop(); },
+  brush: () => brushId, ghostRotation: () => ghostRot, team: () => team, roadModeOn: () => roadMode,
+  snapshot, undo, historyLen: () => history.length,
   // Roads
   setRoadMode, setRoadErase, paintRoad: (cx, cz) => paintRoad({ cx, cz }),
-  roadCount: () => roads.size, clearRoads: () => { roads.clear(); roadAnchor = null; rebuildRoads(); },
+  roadCount: () => roads.size, hasRoad: (cx, cz) => roads.has(rkey(cx, cz)),
+  clearRoads: () => { roads.clear(); rebuildRoads(); },
   isWaterCell,
   // Layer 3: rules
   rules: () => JSON.parse(JSON.stringify(rules)),
