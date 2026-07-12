@@ -319,6 +319,8 @@ const mapMsg = t => { const el = $('map-msg'); if (el) el.textContent = t; };
 // copy always matches the shipped file instead of a pasted snapshot drifting out of date).
 const PRESET_MAPS = [{
   id: 'preset-basic-training', name: 'Basic Training', file: '/rmrf/campaign/basic-training.json',
+}, {
+  id: 'preset-crossroads', name: 'Crossroads', file: '/rmrf/campaign/crossroads.json',
 }];
 // Retired presets (removed from the list above) — purge any copy an earlier boot seeded
 // into this browser, so retiring one here actually makes it disappear everywhere.
