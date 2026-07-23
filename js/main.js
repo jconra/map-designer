@@ -12,6 +12,11 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { IslandMap, DEFAULTS, TILE } from '/rmrf/js/IslandMap.js';
 import { ASSETS } from '/rmrf/js/assets.manifest.js?v=9';   // same-origin: palette always matches the BOX'S current game
 
+// Where the game lives: root of rmrfbase.com in production, /rmrf/ on the local box. Set by
+// the bootstrap in index.html (which also remaps the /rmrf/ module imports above). Used for
+// the non-module fetches — campaign presets, palette thumbnails, and the play-test launch URL.
+const RMRF = window.RMRF_BASE || '/rmrf';
+
 const CELL = 5;   // world units per build cell — matches the game's BuildGrid(map, 5)
 // Teams are identity-only ('a' / 'b'), NEVER named by colour — players choose
 // their colour in-game, so the map must not bake one in (naming teams red/blue
@@ -318,9 +323,9 @@ const mapMsg = t => { const el = $('map-msg'); if (el) el.textContent = t; };
 // `file` is FETCHED from the game (campaign maps stay one source of truth — the designer
 // copy always matches the shipped file instead of a pasted snapshot drifting out of date).
 const PRESET_MAPS = [{
-  id: 'preset-basic-training', name: 'Basic Training', file: '/rmrf/campaign/basic-training.json',
+  id: 'preset-basic-training', name: 'Basic Training', file: `${RMRF}/campaign/basic-training.json`,
 }, {
-  id: 'preset-crossroads', name: 'Crossroads', file: '/rmrf/campaign/crossroads.json',
+  id: 'preset-crossroads', name: 'Crossroads', file: `${RMRF}/campaign/crossroads.json`,
 }];
 // Retired presets (removed from the list above) — purge any copy an earlier boot seeded
 // into this browser, so retiring one here actually makes it disappear everywhere.
@@ -437,7 +442,7 @@ $('map-name').addEventListener('keydown', e => { if (e.key === 'Enter') saveCurr
 // The game is served under /rmrf on this box, so the map
 // travels in the URL: terrain + AI rules + placed assets (bases, forts, supply) +
 // painted roads. Unicode-safe base64 (matches the game's decodeURIComponent(escape(atob…))).
-const GAME_URL = '/rmrf/';   // test maps against the box's current build (was rmrfbase.com — always one deploy behind)
+const GAME_URL = `${RMRF}/`;   // test maps against the box's current build (was rmrfbase.com — always one deploy behind)
 function playUrl() {
   const cfg = exportConfig();
   const slim = { version: cfg.version, name: cfg.name, base: cfg.base, rules: cfg.rules,
@@ -755,7 +760,7 @@ function buildPalette() {
     const tile = document.createElement('div');
     tile.className = 'pal-tile'; tile.dataset.id = a.id; tile.title = a.desc || a.name;
     const img = document.createElement('img');
-    img.src = `/rmrf/thumbnails/${a.id}.png`;
+    img.src = `${RMRF}/thumbnails/${a.id}.png`;
     img.onerror = () => img.remove();   // no thumbnail (e.g. perimeter kit) → label only
     const lbl = document.createElement('span'); lbl.textContent = a.name;
     tile.appendChild(img); tile.appendChild(lbl);
@@ -772,7 +777,7 @@ function buildPalette() {
   const rt = document.createElement('div');
   rt.className = 'pal-tile'; rt.dataset.id = '__road'; rt.title = 'Roads — tap to lay a connected route';
   const rimg = document.createElement('img');
-  rimg.src = '/rmrf/thumbnails/road.png'; rimg.onerror = () => rimg.remove();
+  rimg.src = `${RMRF}/thumbnails/road.png`; rimg.onerror = () => rimg.remove();
   const rlbl = document.createElement('span'); rlbl.textContent = 'Road';
   rt.appendChild(rimg); rt.appendChild(rlbl);
   rt.addEventListener('click', () => setRoadMode(!roadMode));
